@@ -1,60 +1,415 @@
-# Hệ Thống Giám Sát An Ninh Mạng (SIEM/IDS) & Phát Hiện Sớm Tấn Công Ransomware
+# SOC Lab: SIEM/IDS Monitoring & Early Ransomware Detection
 
-## Giới Thiệu Dự Án
-Dự án tập trung vào việc nghiên cứu, xây dựng và triển khai một phân vùng mạng doanh nghiệp giả lập (SOC Lab) tích hợp các giải pháp SIEM/IDS nhằm giám sát, bóc tách log hệ thống chi tiết và đưa ra các cảnh báo, phản ứng sớm đối với các hành vi bất thường, đặc biệt là các biến thể mã độc mã hóa dữ liệu (Ransomware).
+## 1. Project Overview
 
----
+This project builds a simulated enterprise security lab (**SOC Lab**) to monitor system activity, centralize logs, and detect suspicious behavior early using **SIEM/IDS** technologies. The main focus is the detection of behaviors associated with **ransomware attacks**, including abnormal process execution, mass file changes, and destructive actions such as shadow copy deletion.
 
-## Kiến Trúc Hệ Thống & Cấu Hình Thiết Bị
-
-### 1. Tường Lửa Tối Ưu Phân Vùng (pfSense Firewall)
-* **Vùng mạng (Interfaces):**
-  * **Cổng WAN (em0):** Nhận cấu hình IP động (DHCP Private) từ hạ tầng PNetLab để định tuyến ra Internet.
-  * **Cổng DMZ (em1):** Cấu hình dải IP tĩnh `10.10.10.1/24` nhằm cách ly các máy chủ công khai.
-  * **Vùng INTERNAL (em2):** Cấu hình dải mạng nội bộ `192.168.1.1/24` cấp phát cho cụm máy chủ/máy trạm doanh nghiệp thông qua Switch.
-* **Luật Tường Lửa (Firewall Rules) & NAT:**
-  * **DMZ Rules:** * *Luật Chặn:* Ngăn chặn triệt để mọi lưu lượng chủ động kết nối từ vùng DMZ (`DMZ net`) sang vùng nội bộ INTERNAL (`LAN net`).
-    * *Luật Cho Phép:* Kích hoạt quyền truy cập từ `DMZ net` đi `any` hướng Internet để cập nhật ứng dụng.
-  * **LAN/INTERNAL Rules:** Cho phép dải mạng nội bộ kết nối ra Internet phục vụ tải công cụ giám sát.
-  * **WAN NAT (Port Forward):**
-    * NAT cổng công khai HTTP/HTTPS về máy chủ Web (`10.10.10.5`).
-    * NAT cổng truy cập từ xa `2222` ngoài WAN về cổng SSH `22` của Web Server để hỗ trợ quản trị từ máy thật Linux Mint.
-
-### 2. Máy Chủ Ứng Dụng (Ubuntu Web Server - Vùng DMZ)
-* **Thông số Network:** IP Tĩnh `10.10.10.5/24` | Gateway: `10.10.10.1` | DNS: `8.8.8.8`
-* **Các dịch vụ cốt lõi đã triển khai:**
-  * **Nginx Web Server:** Chuyển đổi định dạng ghi log truy cập (`access_log`) mặc định sang cấu trúc dữ liệu kiểu **JSON** (`/var/log/nginx/access.json`) phục vụ phân tích log tự động trên SIEM.
-  * **OpenSSH Server:** Kích hoạt quyền `PermitRootLogin yes` hỗ trợ cấu hình hạ tầng Lab an toàn qua Terminal máy thật.
-  * **Auditd (Linux Auditing System):** Kích hoạt hệ thống kiểm toán nhằm theo dõi tính toàn vẹn của mã nguồn Web và giám sát các hành vi thao túng tệp tin hệ thống.
-
-### 3. Máy Chủ Quản Trị Hệ Thống (Windows Server - Vùng INTERNAL)
-* **Thông số Network:** IP Tĩnh `192.168.1.2/24` | Gateway: `192.168.1.1` | DNS: `192.168.1.2`
-* **Dịch vụ & Dữ liệu giả lập:**
-  * **Active Directory Domain Services (AD DS):** Kích hoạt vai trò Domain Controller (DC) thành công cho Forest nội bộ mang tên miền **`soclab.com`**.
-  * **BadBlood Automation Script:** Khởi chạy thành công kịch bản PowerShell tự động sinh dữ liệu doanh nghiệp quy mô lớn (Hàng trăm OUs, nhóm bảo mật Groups, và các tài khoản người dùng ngẫu nhiên) để tạo môi trường Active Directory có độ nhiễu thực tế.
-  * **Mục tiêu Giả Lập (File Share):** Thiết lập vùng thư mục dùng chung `C:\Data_DoAn` (Cấp quyền Full Control cho nhóm `Everyone`) chứa các tệp tài liệu mẫu, đóng vai trò làm mục tiêu "bẫy dữ liệu" (HoneyFolder) khi thực hiện kịch bản Ransomware mã hóa tống tiền.
+The lab is designed around a segmented enterprise network model with **pfSense**, **Ubuntu Web Server**, **Windows Server**, and a centralized **Wazuh SIEM** node. Logs are collected from both Linux and Windows systems, normalized, and analyzed at the SOC layer to support alerting and future automated response.
 
 ---
 
-## 🛠️ Nhật Ký Xử Lý Sự Cố Hạ Tầng (Troubleshooting Log)
+## 2. Objectives
 
-Dưới đây là danh sách tổng hợp các lỗi kỹ thuật hệ thống mạng/hệ điều hành đã phát sinh trong quá trình thiết lập Lab và các biện pháp khắc phục tương ứng:
-
-| STT | Mô Tả Lỗi | Nguyên Nhân Gốc (Root Cause) | Giải Pháp Khắc Phục (Resolution) |
-| :--- | :--- | :--- | :--- |
-| **1** | Thiết bị Linux gửi tin nhắn `DHCPDISCOVER` liên tục nhưng không nhận được IP | Lỗi thiết kế Topology vật lý. Việc kết nối dây "bắc cầu" trực tiếp giữa các máy chủ không qua Switch tạo vòng lặp mạng (Loop) khiến pfSense không tiếp nhận được gói tin Broadcast. | Chuyển đổi hoàn toàn cơ chế nhận cấu hình IP của card mạng sang dạng **IP Tĩnh (Static IP)** định nghĩa trong Netplan. |
-| **2** | Lỗi định tuyến hệ thống `Network is unreachable` khi ping ra ngoài Internet | Tệp tin cấu hình mạng `/etc/netplan/00-installer-config.yaml` mới chỉ định nghĩa IP cục bộ mà thiếu thông số định tuyến lối ra (`gateway4`). | Bổ sung trường `gateway4: 10.10.10.1` trỏ thẳng về IP chân cổng nội bộ tương ứng của Tường lửa pfSense. |
-| **3** | Lưu lượng Ping ra Internet bị mất sạch (**100% packet loss**) mặc dù mạng Local đã thông | pfSense kích hoạt chế độ mặc định chặn toàn bộ lưu lượng định tuyến từ các dải IP Private thông qua cổng WAN trong môi trường ảo hóa Lab lồng nhau. | Truy cập giao diện quản trị Web GUI $\rightarrow$ **Interfaces** $\rightarrow$ **WAN** $\rightarrow$ Bỏ chọn mục **Block private networks and loopback addresses**. |
-| **4** | Lỗi cài đặt gói ứng dụng `403 Forbidden` khi sử dụng trình quản lý APT | Kho lưu trữ Repo mặc định trong template hệ điều hành trỏ về máy chủ Đại học Thanh Hoa (`mirrors.tuna.tsinghua.edu.cn`) bị chặn truy cập từ dải mạng ngoại bang. | Ghi đè tệp tin `/etc/apt/sources.list` hướng luồng tải về cụm máy chủ chính thức của Ubuntu (`vn.archive.ubuntu.com`) và làm sạch cache bằng `apt clean && apt update`. |
-| **5** | Hệ thống báo lỗi phân giải tên miền `Could not resolve 'archive.ubuntu.com'` | Sai sót lỗi chính tả trong file cấu hình (gõ nhầm thành `achive`) phối hợp lỗi chưa nhận diện được máy chủ phân giải DNS quốc tế. | Chuẩn hóa lại chuỗi ký tự Repo và thực hiện ép cấu hình DNS của Google thông qua lệnh: `echo "nameserver 8.8.8.8" > /etc/resolv.conf`. |
-| **6** | Windows Server gõ lệnh `Invoke-WebRequest` bị lỗi đỏ `404 Not Found` khi tải BadBlood | Do gõ sai ký tự đường dẫn URL tải file nguồn `.zip` từ kho lưu trữ GitHub (bị dính chuỗi `/arch...` ở cuối link). | Chuẩn hóa lại tham số đường dẫn chính xác: `https://github.com/davidperezbh/BadBlood/archive/master.zip`. |
-| **7** | Windows Server đã cấu hình Rule cho phép ra mạng nhưng vẫn không thể kết nối ra ngoài Internet (Không ping được `8.8.8.8` nhưng ping được Gateway `192.168.1.1`) | Cơ chế Tự động định tuyến (Automatic Outbound NAT) trên pfSense bị lỗi đối với các Interface mạng ảo tạo mới, gói tin từ dải LAN không được dịch sang IP WAN. | Truy cập **Firewall** $\rightarrow$ **NAT** $\rightarrow$ **Outbound** $\rightarrow$ Chuyển sang **Hybrid Outbound NAT** và thêm thủ công Rule NAT Mappings cho dải nguồn `192.168.1.0/24` đi qua cổng WAN. |
-| **8** | Giao diện System Properties trên máy Windows Client bị mờ/ẩn hoàn toàn ô nhập tên miền ở mục **Member of (Domain)** | Máy ảo Windows Client cài đặt phiên bản **Windows Home** (Tính năng Join Domain bị Microsoft cắt bỏ hoàn toàn trên bản Home). | Quyết định gỡ bỏ máy ảo cũ, chuẩn bị cài đặt lại hệ điều hành sạch sử dụng phiên bản **Windows 10/11 Pro** để được mở khóa tính năng doanh nghiệp. |
+* Build a small enterprise-style SOC Lab with **network segmentation**
+* Deploy a centralized **SIEM/IDS monitoring system** using **Wazuh**
+* Collect logs from **Linux**, **Windows**, and **web services**
+* Simulate realistic enterprise telemetry using **Active Directory**, **Sysmon**, **Auditd**, and **Nginx JSON logs**
+* Prepare detection logic for ransomware-related activity
+* Lay the groundwork for **active response** and attack simulation
 
 ---
 
-## 📅 Kế Hoạch Triển Khai Tiếp Theo (Ngày 4)
-- [ ] Hoàn tất cài đặt hệ điều hành Windows Client bản Pro, cấu hình IP tĩnh và tiến hành **Join Domain** vào hệ thống quản lý `soclab.com`.
-- [ ] Triển khai cài đặt công cụ **Sysmon (System Monitor)** trên cụm Windows kết hợp tệp cấu hình lọc log nâng cao độc hại của `SwiftOnSecurity`.
-- [ ] Cấu hình **Advanced Audit Policy** thông qua Group Policy Management (`gpmc.msc`) trên Domain Controller để kích hoạt giám sát kiểm toán chuyên sâu (`Audit File System` và `Audit Process Creation`).
-- [ ] Xây dựng phân vùng giám sát SOC trung tâm (Dựng máy chủ Ubuntu chạy Wazuh Manager và Suricata IDS).
+## 3. Lab Architecture
+
+The lab is divided into three main zones:
+
+* **WAN**: external network / Internet access through PNetLab
+* **DMZ**: public-facing services such as the Ubuntu Web Server
+* **INTERNAL**: internal enterprise network hosting the Windows Server and SOC components
+
+### Network Layout
+
+```text
+Internet
+   |
+[ pfSense Firewall ]
+   |-------- WAN
+   |-------- DMZ -------- Ubuntu Web Server (10.10.10.10)
+   |
+   |-------- INTERNAL --- Windows Server / AD / Sysmon
+                     \
+                      \-- Wazuh SOC Server
+```
+
+---
+
+## 4. System Components
+
+### 4.1 pfSense Firewall
+
+The pfSense firewall is used to segment the lab network and control traffic between WAN, DMZ, and INTERNAL zones.
+
+#### Interfaces
+
+| Interface        | Role                                                          | IP / Network     |
+| ---------------- | ------------------------------------------------------------- | ---------------- |
+| WAN (`em0`)      | Receives DHCP from PNetLab and provides Internet connectivity | DHCP             |
+| DMZ (`em1`)      | Isolates public-facing services                               | `10.10.10.1/24`  |
+| INTERNAL (`em2`) | Internal enterprise network                                   | `192.168.1.1/24` |
+
+#### Firewall Policy
+
+* **DMZ → INTERNAL**: blocked by default to prevent lateral movement from the public zone into the internal network
+* **DMZ → Internet**: allowed for package updates and outbound connectivity
+* **DMZ → SOC**: allowed on Wazuh-related ports `1514` and `1515`
+* **INTERNAL → Internet**: allowed to download required tools and packages
+
+#### NAT / Port Forwarding
+
+| Public Port | Internal Destination | Purpose                                      |
+| ----------- | -------------------- | -------------------------------------------- |
+| 80 / 443    | `10.10.10.10`         | Publish the web server                       |
+| 2222        | Web Server port 22   | Remote SSH administration from host machine  |
+| 8433        | SOC Ubuntu port 443  | Access Wazuh Dashboard from the host machine |
+
+---
+
+### 4.2 Ubuntu Web Server (DMZ)
+
+The Ubuntu Web Server acts as a public-facing service inside the DMZ and also serves as a Linux log source for the SIEM platform.
+
+#### Network Configuration
+
+* **IP**: `10.10.10.10/24`
+* **Gateway**: `10.10.10.1`
+* **DNS**: `8.8.8.8`
+
+#### Installed Services and Monitoring Components
+
+* **Nginx Web Server**
+  Configured to output access logs in **JSON format** for easier parsing by the SIEM pipeline.
+
+* **OpenSSH Server**
+  Enabled for remote administration from the host machine.
+
+* **Auditd**
+  Used to monitor file system activity and changes related to the web application or critical system files.
+
+* **Wazuh Agent 4.8.0**
+  Configured to forward:
+
+  * Linux system logs
+  * Auditd events
+  * Nginx JSON access logs
+    to the centralized Wazuh Manager.
+
+---
+
+### 4.3 Windows Server (INTERNAL)
+
+The Windows Server represents the internal enterprise environment and provides both identity services and Windows telemetry for threat detection.
+
+#### Network Configuration
+
+* **IP**: `192.168.1.2/24`
+* **Gateway**: `192.168.1.1`
+* **DNS**: `192.168.1.2`
+
+#### Installed Services and Monitoring Components
+
+* **Active Directory Domain Services (AD DS)**
+  The server is promoted to a **Domain Controller** for the internal lab domain:
+
+  ```text
+  soclab.com
+  ```
+
+* **BadBlood**
+  Used to generate a realistic Active Directory environment with many OUs, groups, and users for a more practical monitoring scenario.
+
+* **Sysmon v15.21**
+  Installed with the **SwiftOnSecurity** configuration to capture rich endpoint telemetry such as:
+
+  * **Event ID 1**: process creation
+  * **Event ID 11**: file creation / file rename activity
+
+* **Wazuh Agent 4.8.0**
+  Configured to forward Sysmon logs from:
+
+  ```text
+  Microsoft-Windows-Sysmon/Operational
+  ```
+
+* **HoneyFolder / File Share Target**
+  A shared folder is created at:
+
+  ```powershell
+  C:\Data_DoAn
+  ```
+
+  with permissive access for testing ransomware behavior against decoy data.
+
+---
+
+### 4.4 SOC Monitoring Server (Ubuntu)
+
+The SOC server hosts the centralized Wazuh stack and acts as the SIEM core of the lab.
+
+#### Network Configuration
+
+* **IP**: `192.168.1.10/24`
+
+#### Core Components
+
+* **Wazuh Indexer**
+* **Wazuh Manager**
+* **Wazuh Dashboard**
+
+These components are deployed in an **all-in-one Docker Compose architecture**. The server receives agent logs, stores them, and provides a web dashboard for monitoring and analysis.
+
+#### Wazuh Ports
+
+| Port         | Purpose                         |
+| ------------ | ------------------------------- |
+| 1514 TCP/UDP | Log ingestion                   |
+| 1515 TCP     | Agent registration / enrollment |
+| 443          | Web dashboard access            |
+
+---
+
+## 5. Deployment Steps
+
+## 5.1 Deploy Wazuh on the SOC Server
+
+```bash
+# Increase virtual memory for OpenSearch / Wazuh Indexer
+sudo sysctl -w vm.max_map_count=262144
+
+# Generate certificates for the single-node deployment
+cd ~/wazuh-docker/single-node/
+sudo docker-compose -f generate-indexer-certs.yml up -d
+
+# Start the Wazuh stack
+sudo docker-compose up -d
+
+# Restart Wazuh Manager after modifying rules or configuration
+sudo docker exec -it single-node_wazuh.manager_1 /var/ossec/bin/wazuh-control restart
+```
+
+---
+
+## 5.2 Configure Monitoring on the Ubuntu Web Server
+
+### Step 1: Verify static network configuration
+
+```bash
+sudo nano /etc/netplan/00-installer-config.yaml
+```
+
+### Step 2: Enable Auditd
+
+```bash
+sudo systemctl start auditd
+sudo systemctl enable auditd
+```
+
+### Step 3: Install Wazuh Agent 4.7.5
+
+```bash
+curl -so wazuh-agent_4.7.5-1_amd64.deb https://packages.wazuh.com/4.x/apt/pool/main/w/wazuh-agent/wazuh-agent_4.7.5-1_amd64.deb
+sudo WAZUH_MANAGER='192.168.1.10' dpkg -i wazuh-agent_4.7.5-1_amd64.deb
+```
+
+### Step 4: Configure `ossec.conf` to collect Nginx JSON logs
+
+```bash
+sudo nano /var/ossec/etc/ossec.conf
+```
+
+Add:
+
+```xml
+<localfile>
+  <location>/var/log/nginx/access.json</location>
+  <log_format>json</log_format>
+</localfile>
+```
+
+### Step 5: Restart the agent
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart wazuh-agent
+```
+
+---
+
+## 5.3 Configure Sysmon and Wazuh Agent on Windows Server
+
+### Step 1: Download and install Sysmon
+
+```powershell
+New-Item -ItemType Directory -Force -Path "C:\Temp"
+Set-Location -Path "C:\Temp"
+Invoke-WebRequest -Uri "https://download.sysinternals.com/files/Sysmon.zip" -OutFile "Sysmon.zip"
+Expand-Archive -Path "Sysmon.zip" -DestinationPath "C:\Temp\Sysmon" -Force
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml" -OutFile "sysmonconfig.xml"
+CD C:\Temp\Sysmon
+.\Sysmon64.exe -i ..\sysmonconfig.xml -accepteula
+Get-Service -Name Sysmon64
+```
+
+### Step 2: Install Wazuh Agent and point it to the SOC server
+
+```powershell
+Invoke-WebRequest -Uri "https://packages.wazuh.com/4.x/windows/wazuh-agent-4.7.5-1.msi" -OutFile "C:\wazuh-agent.msi"
+Start-Process msiexec.exe -ArgumentList '/i C:\wazuh-agent.msi /q WAZUH_MANAGER="192.168.1.10"' -Wait
+```
+
+### Step 3: Edit the agent configuration if needed
+
+```powershell
+notepad "C:\Program Files\ossec-agent\ossec.conf"
+```
+
+### Step 4: Restart the Wazuh service
+
+```powershell
+Restart-Service -Name Wazuh
+```
+
+---
+
+## 6. Log Sources Collected by the SIEM
+
+The current lab collects and forwards telemetry from the following sources:
+
+| Source System     | Data Source                             | Purpose                                                |
+| ----------------- | --------------------------------------- | ------------------------------------------------------ |
+| Ubuntu Web Server | Nginx access logs (JSON)                | Web request monitoring and suspicious access detection |
+| Ubuntu Web Server | Auditd                                  | File integrity and Linux activity auditing             |
+| Ubuntu Web Server | Linux system logs                       | General operating system monitoring                    |
+| Windows Server    | Sysmon                                  | Process, file, and system behavior monitoring          |
+| Windows Server    | Windows event telemetry via Wazuh Agent | Endpoint visibility and suspicious activity detection  |
+
+---
+
+## 7. Detection Use Case: Early Ransomware Monitoring
+
+This project is specifically oriented toward building detection logic for ransomware-like activity. The expected detection path includes both **host-level telemetry** and **behavioral correlation**.
+
+### Monitoring Goals
+
+* Detect suspicious process execution on Windows endpoints
+* Detect bulk file creation, file rename, or extension changes
+* Detect attempts to delete shadow copies or backups
+* Detect suspicious file system activity in decoy folders such as `C:\Data_DoAn`
+* Centralize these events in Wazuh for alerting and future automated response
+
+### Relevant Telemetry
+
+| Event / Source     | Detection Value                                                                 |
+| ------------------ | ------------------------------------------------------------------------------- |
+| Sysmon Event ID 1  | Detect unusual process creation, scripting engines, or encryption tools         |
+| Sysmon Event ID 11 | Detect file creation / rename patterns associated with mass encryption          |
+| Auditd             | Detect Linux-side file modification and sensitive file access                   |
+| Nginx logs         | Provide visibility into web access behavior and potential exploitation attempts |
+
+---
+
+## 8. Troubleshooting Log
+
+During deployment, several infrastructure and configuration issues were encountered. The following table summarizes the root causes and resolutions.
+
+| #  | Issue                                                                                       | Root Cause                                                                         | Resolution                                                                                   |
+| -- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 1  | Linux host continuously sent DHCPDISCOVER but received no IP                                | Incorrect topology design; direct host-to-host links created network loop behavior | Switched to **static IP addressing** and defined network settings manually in Netplan        |
+| 2  | `Network is unreachable` when pinging the Internet                                          | Missing default gateway in `/etc/netplan/00-installer-config.yaml`                 | Added `gateway4: 10.10.10.1`                                                                 |
+| 3  | Internet ping failed with 100% packet loss despite local connectivity                       | pfSense WAN was blocking private networks in the nested lab environment            | Disabled **Block private networks and loopback addresses** on WAN                            |
+| 4  | `403 Forbidden` while installing packages with APT                                          | Ubuntu mirror source pointed to an inaccessible repository                         | Replaced mirror source with the official Ubuntu repository and refreshed package metadata    |
+| 5  | `Could not resolve 'archive.ubuntu.com'`                                                    | Typo in repository hostname and missing DNS configuration                          | Corrected the repository URL and manually set DNS to `8.8.8.8`                               |
+| 6  | `Invoke-WebRequest` returned `404 Not Found` when downloading BadBlood                      | Incorrect GitHub URL                                                               | Corrected the download link                                                                  |
+| 7  | Windows Server could ping the gateway but not access the Internet                           | Automatic Outbound NAT on pfSense did not correctly translate the INTERNAL subnet  | Switched to **Hybrid Outbound NAT** and created a manual NAT rule for `192.168.1.0/24`       |
+| 8  | Windows Client could not join the domain because the domain membership field was greyed out | The VM was running a **Windows Home** edition                                      | Reinstalled the client using **Windows 10/11 Pro**                                           |
+| 9  | Wazuh Indexer container kept crashing with `CPU does not support x86-64-v2`                 | PNetLab default CPU model `kvm64` did not expose required CPU instructions         | Changed the VM CPU model to **host / host passthrough**                                      |
+| 10 | Ubuntu Wazuh Agent failed with `Invalid server address found: 'MANAGER_IP'`                 | Placeholder `MANAGER_IP` remained in the generated configuration                   | Replaced it with the SOC server IP `192.168.1.10` in `ossec.conf`                            |
+| 11 | Windows Wazuh Agent attempted to connect to `192.168.1.2` and never appeared online         | Incorrect SOC server IP was used during agent configuration                        | Updated all relevant `<server>` and `<enrollment>` entries in `ossec.conf` to `192.168.1.10` |
+| 12 | `Get-Service` could not find a service named `Sysmon`                                       | The installed service name was actually `Sysmon64`                                 | Used `Get-Service -Name Sysmon64`                                                            |
+
+---
+
+## 9. Current Status
+
+At the current stage, the lab has successfully achieved the following:
+
+* Network segmentation with **pfSense**
+* A working **DMZ Web Server** with **Nginx**, **Auditd**, and **Wazuh Agent**
+* A working **Windows Server** with **AD DS**, **BadBlood**, **Sysmon**, and **Wazuh Agent**
+* A centralized **Wazuh SIEM** stack deployed on Ubuntu using **Docker Compose**
+* Log forwarding from Linux and Windows systems into the SOC environment
+* A decoy data folder prepared for future ransomware simulation
+
+---
+
+## 10. Next Implementation Phase
+
+The next phase of the project focuses on turning the lab from a log collection environment into an active ransomware detection and response platform.
+
+### Planned Tasks
+
+* Build **custom Wazuh rules** in `local_rules.xml` to detect:
+
+  * **Event ID 1** patterns related to malicious process execution or shadow copy deletion
+  * **Event ID 11** patterns related to mass file creation / renaming / extension changes
+
+* Configure **Active Response** on the Wazuh side to:
+
+  * block malicious IP addresses
+  * isolate compromised systems
+  * trigger automated containment logic
+
+* Execute a controlled **ransomware simulation scenario** by:
+
+  * deleting or tampering with shadow copies
+  * encrypting files inside the decoy folder `C:\Data_DoAn`
+  * validating whether the SIEM can detect and alert on the attack chain
+
+---
+
+## 11. Suggested Future Improvements
+
+To make the project stronger as a graduation project / GitHub portfolio project, the following improvements should be added:
+
+1. **Screenshots / evidence**
+
+   * Wazuh Dashboard overview
+   * Agent registration status
+   * Sysmon event visibility
+   * Nginx log parsing results
+   * Triggered alerts during the ransomware simulation
+
+2. **Detection rule examples**
+
+   * Include the actual `local_rules.xml` rules used for ransomware detection
+   * Explain why each rule exists and which event patterns it targets
+
+3. **Attack simulation procedure**
+
+   * Document the exact commands or scripts used to simulate ransomware behavior
+   * Separate safe simulation steps from destructive or unsafe actions
+
+4. **Incident response workflow**
+
+   * Describe how an alert moves from detection to triage, investigation, and containment inside the SOC lab
+
+5. **Architecture diagram**
+
+   * Replace the ASCII diagram with a proper network diagram showing pfSense, DMZ, INTERNAL, Wazuh, and log flows
+
+---
+
+## 12. Conclusion
+
+This project establishes a practical SOC Lab for studying enterprise log collection, SIEM deployment, and ransomware-oriented detection engineering. By combining **pfSense segmentation**, **Wazuh**, **Sysmon**, **Auditd**, and **Active Directory telemetry**, the environment provides a realistic foundation for both blue-team monitoring and future security experimentation.
+
+The current implementation already supports centralized monitoring and cross-platform log collection. The next step is to transform that telemetry into **actionable ransomware detections** and **automated defensive responses**.
